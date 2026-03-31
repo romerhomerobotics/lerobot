@@ -7,15 +7,17 @@ RIGHT_PORT="/dev/ttyACM2"
 LEFT_PORT="/dev/ttyACM3"
 
 # Camera Indices (OpenCV /dev/videoX)
-CAM_GRIPPER_RIGHT=4
-CAM_GRIPPER_LEFT=0
+CAM_GRIPPER_LEFT=4
 CAM_MIDDLE=2
+CAM_GRIPPER_RIGHT=0
 
 # --- Project Configuration ---
 OUTPUT_ROOT="/home/kovan/lerobot/inference_outputs"
-POLICY_PATH="/home/kovan/lerobot/outputs/train/homerobotics_fold_cloth_50hz/checkpoints/100000/pretrained_model"
+POLICY_PATH="/home/kovan/lerobot/outputs/train/model_fold_cloth_twice_50hz_with_variance/checkpoints/180000/pretrained_model"
 DATASET_REPO="maksimgorki/eval_homerobotics_2"
 TASK_NAME="deneme"
+
+FPS=90
 
 # --- Execute ---
 lerobot-record \
@@ -47,6 +49,8 @@ lerobot-record \
   --dataset.single_task="${TASK_NAME}" \
   --dataset.push_to_hub=false \
   --dataset.root="${OUTPUT_ROOT}" \
+  --dataset.fps=${FPS} \
   --policy.path="${POLICY_PATH}" \
   --policy.device=cuda \
-  --policy.n_action_steps=90
+  --policy.n_action_steps=90 \
+  --dataset.episode_time_s=300

@@ -37,18 +37,7 @@ TELEOP_LEFT_PORT="/dev/ttyACM1"
 TELEOP_RIGHT_PORT="/dev/ttyACM0"
 
 # ==========================================
-# 3. DATASET & RECORDING CONFIGURATION
-# ==========================================
-REPO_ID="maksimgorki/model_fold_cloth_twice_50hz_with_variance"
-TASK="Fold the cloth twice"
-NUM_EPISODES=10
-EPISODE_TIME_S=40
-RESET_TIME_S=20
-DISPLAY_DATA="true"
-FPS=50
-
-# ==========================================
-# 4. BUILD JSON CAMERA PAYLOADS
+# 3. BUILD JSON CAMERA PAYLOADS (For Live Viewing)
 # ==========================================
 
 LEFT_CAM_JSON=$(cat <<EOF
@@ -88,13 +77,11 @@ EOF
 )
 
 # ==========================================
-# 5. EXECUTE RECORDING COMMAND
+# 4. EXECUTE TELEOP COMMAND
 # ==========================================
-echo "Starting LeRobot Data Collection..."
-echo "Task: ${TASK} | Episodes: ${NUM_EPISODES}"
-echo "Repo: ${REPO_ID}"
+echo "Starting LeRobot Teleoperation (Live View, No Recording)..."
 
-lerobot-record \
+lerobot-teleoperate \
   --robot.type="${ROBOT_TYPE}" \
   --robot.id="${ROBOT_ID}" \
   --robot.left_arm_config.port="${ROBOT_LEFT_PORT}" \
@@ -105,12 +92,4 @@ lerobot-record \
   --teleop.id="${TELEOP_ID}" \
   --teleop.left_arm_config.port="${TELEOP_LEFT_PORT}" \
   --teleop.right_arm_config.port="${TELEOP_RIGHT_PORT}" \
-  --display_data="${DISPLAY_DATA}" \
-  --dataset.repo_id="${REPO_ID}" \
-  --dataset.num_episodes="${NUM_EPISODES}" \
-  --dataset.single_task="${TASK}" \
-  --dataset.episode_time_s="${EPISODE_TIME_S}" \
-  --dataset.reset_time_s="${RESET_TIME_S}" \
-  --dataset.fps="${FPS}" \
-  --dataset.push_to_hub=true \
-  --resume=true
+  --display_data="true"

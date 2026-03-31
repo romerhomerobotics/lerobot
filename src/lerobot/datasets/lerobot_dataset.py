@@ -1680,8 +1680,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         obj.vcodec = vcodec
         obj._encoder_threads = encoder_threads
 
-        if image_writer_processes or image_writer_threads:
-            obj.start_image_writer(image_writer_processes, image_writer_threads)
+        # if image_writer_processes or image_writer_threads:
+        #     obj.start_image_writer(image_writer_processes, image_writer_threads)
 
         # TODO(aliberts, rcadene, alexander-soare): Merge this with OnlineBuffer/DataBuffer
         obj.episode_buffer = obj.create_episode_buffer()
