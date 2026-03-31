@@ -177,3 +177,6 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+
+create_dataset.sh

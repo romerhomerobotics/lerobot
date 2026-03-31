@@ -1,0 +1,6 @@
+{
+  "pretrained_checkpoint": "/home/romer-vla-sim/Workspace/lerobot/outputs/train/2026-03-31/08-30-59_act/checkpoints/100000/pretrained_model",
+  "num_open_loop_steps": 15,
+  "speed_limit": false,
+  "control_mode": "velocity"
+}

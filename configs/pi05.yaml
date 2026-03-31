@@ -1,0 +1,24 @@
+policy:
+  type: pi05
+  pretrained_path: lerobot/pi05_base
+  push_to_hub: false
+dataset:
+  repo_id: HomeRobotics/alotb_v0
+rename_map:
+  image: observation.images.image
+  wrist_image: observation.images.wrist_image
+  state: observation.state
+  actions: action
+
+# --- Memory Optimizations ---
+
+# 1. Decrease batch size (default is 8, lower it to 2 or 1)
+batch_size: 1
+
+# 2. Enable LoRA (Parameter-Efficient Fine Tuning)
+peft:
+  method_type: LORA
+  r: 1
+wandb:
+  enable: true
+  project: "lerobot_pi05_finetuning"
