@@ -5,8 +5,8 @@ from lerobot.robots.config import RobotConfig
 @RobotConfig.register_subclass("franka_panda")
 @dataclass
 class FrankaPandaRobotConfig(RobotConfig):
-    topic_joint_states: str = "/eef_pose"
-    topic_joint_commands: str = "/cartesian_pose_command"
+    eef_states: str = "/eef_pose"
+    eef_commands: str = "/cartesian_pose_command"
     
     cameras: dict[str, CameraConfig] = field(
         default_factory=lambda: {

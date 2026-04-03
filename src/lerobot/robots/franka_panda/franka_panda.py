@@ -31,7 +31,7 @@ class FrankaPanda(Robot):
 
     def __init__(self, config: FrankaPandaRobotConfig):
         super().__init__(config)
-        self.config = config
+        self.config = config # TODO: this is not even used in current implementation
         self._is_connected = False
         
         self.client = None
