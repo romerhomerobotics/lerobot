@@ -1,68 +1,29 @@
+import sys
+import os
+import threading
 import logging
 import time
 from typing import Dict, Tuple
 
 import numpy as np
-import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import JointState, Image
-from std_msgs.msg import Float32MultiArray
-from cv_bridge import CvBridge
+import cv2
 
+# For bridge_client.py
+bridge_lib_path = os.path.expanduser('~/home_robotics/homerobotics_ws/src/ros_external/ros_external')
+if bridge_lib_path not in sys.path:
+    sys.path.append(bridge_lib_path)
+from bridge_client import BridgeClient
+from run_bridge_client import BridgeROSInterface
+
+from std_msgs.msg import Float32MultiArray
+
+# LeRobot imports
 from lerobot.processor import RobotAction, RobotObservation
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 from lerobot.robots.robot import Robot
 from lerobot.robots.franka_panda.config_franka_panda import FrankaPandaRobotConfig
 
 logger = logging.getLogger(__name__)
-
-class FrankaPandaROS2Node(Node):
-    def __init__(self, config: FrankaPandaRobotConfig):
-        super().__init__('lerobot_franka_panda_node')
-        self.config = config
-        self.bridge = CvBridge()
-        
-        self.latest_joint_state = None
-        self.latest_images = {cam_name: None for cam_name in self.config.cameras.keys()}
-        
-        self.joint_state_sub = self.create_subscription(
-            JointState,
-            self.config.topic_joint_states,
-            self.joint_state_callback,
-            10
-        )
-        
-        self.action_pub = self.create_publisher(
-            Float32MultiArray,
-            self.config.topic_joint_commands,
-            10
-        )
-        
-        self.image_subs = {}
-        for cam_name, cam_config in self.config.cameras.items():
-            # Treat index_or_path as the ROS topic. If not provided, fallback to a standard name.
-            topic = str(cam_config.index_or_path) if cam_config.index_or_path else f"/{cam_name}/image_raw"
-            self.image_subs[cam_name] = self.create_subscription(
-                Image,
-                topic,
-                self.make_image_callback(cam_name),
-                10
-            )
-
-    def joint_state_callback(self, msg: JointState):
-        self.latest_joint_state = msg
-
-    def make_image_callback(self, cam_name: str):
-        def image_callback(msg: Image):
-            try:
-                # Convert to BGR array (expected by OpenCV routines often used)
-                # or 'rgb8' depending on your model. 'bgr8' is OpenCV default.
-                cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-                self.latest_images[cam_name] = cv_image
-            except Exception as e:
-                logger.error(f"Error converting image for camera {cam_name}: {e}")
-        return image_callback
-
 
 class FrankaPanda(Robot):
     config_class = FrankaPandaRobotConfig
@@ -72,24 +33,25 @@ class FrankaPanda(Robot):
         super().__init__(config)
         self.config = config
         self._is_connected = False
-        self.node = None
-        self.cameras = self.config.cameras # Make available to standard lerobot logic
-        self._motors_names = [
-            "panda_joint1", "panda_joint2", "panda_joint3", "panda_joint4",
-            "panda_joint5", "panda_joint6", "panda_joint7", "panda_finger_joint1", "panda_finger_joint2"
-        ]
-
+        
+        self.client = None
+        self.interface = None
+        
     @property
     def observation_features(self) -> Dict[str, type | Tuple]:
-        features = {f"{m}.pos": float for m in self._motors_names}
-        for cam_name, cam_config in self.config.cameras.items():
-            # Assuming standard RGB/BGR 3-channel images
-            features[cam_name] = (cam_config.height, cam_config.width, 3)
-        return features
+        # TODO: adjust these
+        return {
+            "full_rgb": (480, 640, 3),     
+            "wrist_rgb": (480, 640, 3),    
+            "proprio": dict,              
+            "gripper": float,              
+            "full_timestamp": object,      
+            "wrist_timestamp": object,     
+        }
 
     @property
     def action_features(self) -> Dict[str, type]:
-        return {f"{m}.pos": float for m in self._motors_names}
+        return {}
 
     @property
     def is_connected(self) -> bool:
@@ -97,69 +59,88 @@ class FrankaPanda(Robot):
 
     @property
     def is_calibrated(self) -> bool:
-        return True # Handled in ROS2
+        return True 
 
     def calibrate(self) -> None:
-        pass # Handled in ROS2
+        pass 
 
     def configure(self) -> None:
-        pass # Handled in ROS2
+        pass 
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
-        if not rclpy.ok():
-            rclpy.init()
-        self.node = FrankaPandaROS2Node(self.config)
+        self.client = BridgeClient()
+        self.interface = BridgeROSInterface(self.client, mode="sim") 
+        
         self._is_connected = True
-        logger.info(f"{self} connected via ROS2.")
+        logger.info(f"{self} connected via BridgeROSInterface.")
+
+    # ------------------------------ API ------------------------------
 
     @check_if_not_connected
     def get_observation(self) -> RobotObservation:
-        # Spin once to get the latest messages
-        rclpy.spin_once(self.node, timeout_sec=0.01)
+        # Fetch data from interface
+        full_rgb, wrist_rgb, proprio, gripper, full_stamp, wrist_stamp = self.interface.get_latest()
         
-        obs_dict = {}
+        obs_dict = {
+            "full_rgb": full_rgb,
+            "wrist_rgb": wrist_rgb,
+            "proprio": proprio,
+            "gripper": gripper,
+            "full_timestamp": full_stamp,
+            "wrist_timestamp": wrist_stamp,
+        }
         
-        # 1. Process Joint States
-        if self.node.latest_joint_state is not None:
-            # Match joint names from the message to extract positions
-            names = self.node.latest_joint_state.name
-            positions = self.node.latest_joint_state.position
-            pos_dict = dict(zip(names, positions))
-            
-            for m in self._motors_names:
-                obs_dict[f"{m}.pos"] = float(pos_dict.get(m, 0.0))
-        else:
-            # Fallback if no message received yet
-            for m in self._motors_names:
-                obs_dict[f"{m}.pos"] = 0.0
-                
-        # 2. Process Cameras
-        for cam_name, cam_config in self.config.cameras.items():
-            img = self.node.latest_images.get(cam_name)
-            if img is not None:
-                obs_dict[cam_name] = img
-            else:
-                # Provide a blank placeholder image if none received yet
-                obs_dict[cam_name] = np.zeros(
-                    (cam_config.height, cam_config.width, 3), 
-                    dtype=np.uint8
-                )
-                
+        print("OBS_DICT KEYS: ", obs_dict.keys())
         return obs_dict
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
-        msg = Float32MultiArray()
-        # Collect commanded positions
-        msg.data = [float(action[f"{m}.pos"]) for m in self._motors_names if f"{m}.pos" in action]
-        self.node.action_pub.publish(msg)
+        pose_action = action["pose"]      
+        gripper_action = action["gripper"] 
+        
+        self.interface.publish_action_pose(pose_action, gripper_action)
         return action
 
     @check_if_not_connected
     def disconnect(self):
-        if self.node:
-            self.node.destroy_node()
-            self.node = None
+        if self.interface:
+            self.interface.shutdown()  
+            self.interface = None
+            self.client = None
         self._is_connected = False
-        logger.info(f"{self} disconnected.")
+        logger.info(f"{self} disconnected from BridgeROSInterface.")
+
+
+if __name__ == "__main__":
+    print("--- Starting Bridge Robot Client ---")
+    
+    config = FrankaPandaRobotConfig()
+    panda = FrankaPanda(config)
+    
+    try:
+        print("Connecting to bridge server...")
+        panda.connect()
+        print("Connected! Listening for observations...\n")
+        
+        while True:
+            obs = panda.get_observation()
+            
+            # Formatted printing so the terminal doesn't get spammed with massive arrays
+            print(f"\n--- Latest Observation @ {time.time():.2f} ---")
+            for k, v in obs.items():
+                if isinstance(v, np.ndarray):
+                    print(f"{k:18}: Array shape {v.shape}")
+                elif isinstance(v, dict):
+                    print(f"{k:18}: Dict with keys {list(v.keys())}")
+                else:
+                    print(f"{k:18}: {v}")
+                    
+            time.sleep(0.5)
+            
+    except KeyboardInterrupt:
+        print("\nCaught KeyboardInterrupt. Shutting down...")
+        
+    finally:
+        panda.disconnect()
+        print("Shutdown complete.")
