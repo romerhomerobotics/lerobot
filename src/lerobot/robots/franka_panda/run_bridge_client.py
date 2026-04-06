@@ -201,6 +201,19 @@ class BridgeROSInterface:
         gmsg.data = float(gripper)
         self.client.send_message("/gripper_command", "std_msgs/Float64", gmsg)
         
+    def publish_delta_action(self, delta_6d, gripper = None):
+        print(f"[ACTION] Publishing Cartesian Delta Command: {delta_6d}")
+        msg = Float64MultiArray()
+        # delta_6d_scaled = delta_6d * 10
+        # msg.data = delta_6d_scaled.tolist()
+        msg.data = delta_6d.tolist()
+        self.client.send_message("/cartesian_delta_command", "std_msgs/Float64MultiArray", msg)
+
+        if gripper is not None: 
+            gmsg = Float64()
+            gmsg.data = float(gripper)
+            self.client.send_message("/gripper_command", "std_msgs/Float64", gmsg)
+        
     def shutdown(self):
         self.client.stop_spinning()
 
@@ -211,6 +224,12 @@ if __name__=="__main__":
     client = BridgeClient()
     target_mode = "sim" 
     interface = BridgeROSInterface(client, mode=target_mode)
+
+    print("[Client] Waiting for ZMQ connection to establish...")
+    time.sleep(2.0)
+
+    pose_action = np.array([0.1, 0, 0.0, 0, 0, 0])
+    interface.publish_delta_action(pose_action)
     
     print("\n[Client] System is running and listening. Waiting for ROS 2 Server...")
     print("[Client] Press Ctrl+C to exit.\n")
