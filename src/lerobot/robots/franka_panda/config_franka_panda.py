@@ -10,12 +10,12 @@ class FrankaPandaRobotConfig(RobotConfig):
     
     cameras: dict[str, CameraConfig] = field(
         default_factory=lambda: {
-            "camera_front": CameraConfig(
+            "image": CameraConfig(
                 width=640,
                 height=480,
                 fps=30
             ),
-            "wrist": CameraConfig(
+            "wrist_image": CameraConfig(
                 width=640, 
                 height=480,
                 fps=30
