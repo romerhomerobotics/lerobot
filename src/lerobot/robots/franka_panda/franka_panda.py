@@ -13,7 +13,7 @@ bridge_lib_path = os.path.expanduser('~/home_robotics/homerobotics_ws/src/ros_ex
 if bridge_lib_path not in sys.path:
     sys.path.append(bridge_lib_path)
 from bridge_client import BridgeClient
-from run_bridge_client import BridgeROSInterface
+from .run_bridge_client import BridgeROSInterface
 
 from std_msgs.msg import Float32MultiArray
 
@@ -31,7 +31,8 @@ class FrankaPanda(Robot):
 
     def __init__(self, config: FrankaPandaRobotConfig):
         super().__init__(config)
-        self.config = config # TODO: this is not even used in current implementation
+        self.config = config
+        self.cameras = config.cameras
         self._is_connected = False
         
         self.client = None
@@ -39,19 +40,19 @@ class FrankaPanda(Robot):
         
     @property
     def observation_features(self) -> Dict[str, type | Tuple]:
-        # TODO: adjust these
-        return {
-            "full_rgb": (480, 640, 3),     
-            "wrist_rgb": (480, 640, 3),    
-            "proprio": dict,              
-            "gripper": float,              
-            "full_timestamp": object,      
-            "wrist_timestamp": object,     
+        features = {
+            "image": (480, 640, 3), # (height, width, channels)
+            "wrist_image": (480, 640, 3),
         }
+        # 7D state (xyz + quat)
+        for i in range(7):
+            features[f"pose_{i}"] = float
+        return features
 
     @property
     def action_features(self) -> Dict[str, type]:
-        return {}
+        # 7D action (xyz + quat)
+        return {f"pose_{i}": float for i in range(7)}
 
     @property
     def is_connected(self) -> bool:
@@ -82,24 +83,42 @@ class FrankaPanda(Robot):
         # Fetch data from interface
         full_rgb, wrist_rgb, proprio, gripper, full_stamp, wrist_stamp = self.interface.get_latest()
         
+        # proprio = {"eef_pos": pos, "eef_quat": quat, "gr_state": gripper}
+        if proprio is not None:
+             pose_7d = np.concatenate([
+                proprio["eef_pos"], 
+                proprio["eef_quat"]
+            ]).astype(np.float32)
+        else:
+            pose_7d = np.zeros(7, dtype=np.float32)
+            
         obs_dict = {
-            "full_rgb": full_rgb,
-            "wrist_rgb": wrist_rgb,
-            "proprio": proprio,
-            "gripper": gripper,
-            "full_timestamp": full_stamp,
-            "wrist_timestamp": wrist_stamp,
+            "image": full_rgb if full_rgb is not None else np.zeros((480, 640, 3), dtype=np.uint8),
+            "wrist_image": wrist_rgb if wrist_rgb is not None else np.zeros((480, 640, 3), dtype=np.uint8),
         }
         
-        print("OBS_DICT KEYS: ", obs_dict.keys())
+        # Add individual pose components
+        for i in range(7):
+            obs_dict[f"pose_{i}"] = float(pose_7d[i])
+            
+        # logger.debug("OBS_DICT KEYS: ", obs_dict.keys())
         return obs_dict
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
-        pose_action = action["pose"]      
-        gripper_action = action["gripper"] 
+        # 7D action from policy = [delta_x, delta_y, delta_z, delta_roll, delta_pitch, delta_yaw, gripper]
+        action_vec = np.array([action[f"pose_{i}"] for i in range(7)], dtype=np.float32)
         
-        self.interface.publish_action_pose(pose_action, gripper_action)
+        delta_action = action_vec[:6]  # delta xyzrpy
+        gripper_output = action_vec[6] # -1 (close) to 1 (open)
+        
+        # Map gripper from [-1, 1] to [0, 100] for the ROS controller
+        gripper_mapped = (gripper_output + 1.0) * 50.0
+        gripper_mapped = np.clip(gripper_mapped, 0.0, 100.0)
+
+        print(f"[FrankaPanda] Delta: {delta_action}, Gripper: {gripper_mapped:.1f}")        
+        # self.interface.publish_delta_action(delta_action, gripper_mapped)
+        self.interface.publish_delta_action(delta_action, None)
         return action
 
     @check_if_not_connected
