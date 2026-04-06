@@ -106,6 +106,7 @@ from lerobot.robots import (  # noqa: F401
     bi_openarm_follower,
     bi_so_follower,
     earthrover_mini_plus,
+    franka_panda,
     hope_jr,
     koch_follower,
     make_robot_from_config,
@@ -345,7 +346,7 @@ def record_loop(
             break
 
         # Get robot observation
-        obs = robot.get_observation()
+        obs = robot.get_observation() # TODO: I need to return obs in correct format for the model
 
         # Applies a pipeline to the raw robot observation, default is IdentityProcessor
         obs_processed = robot_observation_processor(obs)
