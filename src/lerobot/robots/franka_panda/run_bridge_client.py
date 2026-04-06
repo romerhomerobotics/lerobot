@@ -41,6 +41,13 @@ class BridgeROSInterface:
         self._latest_gripper = None
         self._gripper_lock = threading.Lock()
 
+        # Logging setup
+        self.log_dir = os.path.expanduser("~/lerobot/outputs/test_logs")
+        os.makedirs(self.log_dir, exist_ok=True)
+        self._action_buffer = []
+        self._state_buffer = []
+        self._last_save_time = time.time()
+
         # Set up Subscriptions via Bridge
         if mode == "real":
             print("[BridgeROSInterface] Subscribing to COMPRESSED images (Real)")
@@ -65,6 +72,7 @@ class BridgeROSInterface:
     def _full_cam_cb(self, msg: Image):
         if IS_DEBUGGING:
             print(f"[INFO] Received RAW Full Cam Image at {time.time():.2f}")
+        start_time = time.perf_counter()
         try:
             # Replaces cv_bridge: manually convert Image msg to numpy array
             np_arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
@@ -74,6 +82,10 @@ class BridgeROSInterface:
             with self._full_rgb_lock:
                 self._latest_full_rgb = rgb
                 self._latest_full_stamp = msg.header.stamp
+            
+            elapsed = (time.perf_counter() - start_time) * 1000
+            if IS_DEBUGGING:
+                print(f"[Bridge] Full cam decode: {elapsed:.2f}ms")
         except Exception as e:
             print(f"[ERROR] Failed to process full camera image: {e}")
 
@@ -94,6 +106,7 @@ class BridgeROSInterface:
     def _wrist_cam_cb(self, msg: Image):
         if IS_DEBUGGING:
             print(f"[INFO] Received RAW Wrist Cam Image at {time.time():.2f}")
+        start_time = time.perf_counter()
         try:
             np_arr = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
             rgb = cv2.cvtColor(np_arr, cv2.COLOR_BGR2RGB) if msg.encoding == 'bgr8' else np_arr
@@ -101,6 +114,10 @@ class BridgeROSInterface:
             with self._wrist_rgb_lock:
                 self._latest_wrist_rgb = rgb
                 self._latest_wrist_stamp = msg.header.stamp
+            
+            elapsed = (time.perf_counter() - start_time) * 1000
+            if IS_DEBUGGING:
+                print(f"[Bridge] Wrist cam decode: {elapsed:.2f}ms")
         except Exception as e:
             print(f"[ERROR] Failed to process wrist camera image: {e}")
 
@@ -132,6 +149,9 @@ class BridgeROSInterface:
         
         with self._proprio_lock:
             self._latest_proprio = proprio
+        
+        # Logging the state
+        self._state_buffer.append([time.time(), *pos, *quat, gripper_val])
 
     def _gripper_cb(self, msg: Float64):
         if IS_DEBUGGING:
@@ -202,9 +222,8 @@ class BridgeROSInterface:
         self.client.send_message("/gripper_command", "std_msgs/Float64", gmsg)
         
     def publish_delta_action(self, delta_6d, gripper = None):
-        print(f"[ACTION] Publishing Cartesian Delta Command: {delta_6d}")
         msg = Float64MultiArray()
-        delta_6d_scaled = delta_6d * 10
+        delta_6d_scaled = delta_6d * 30
         msg.data = delta_6d_scaled.tolist()
         # msg.data = delta_6d.tolist()
         self.client.send_message("/cartesian_delta_command", "std_msgs/Float64MultiArray", msg)
@@ -214,49 +233,89 @@ class BridgeROSInterface:
             gmsg.data = float(gripper)
             self.client.send_message("/gripper_command", "std_msgs/Float64", gmsg)
         
+
+        # Logging the action
+        self._action_buffer.append([time.time(), *delta_6d, gripper if gripper is not None else 0.0])
+        
     def shutdown(self):
+        print("[Bridge] Shutting down and saving logs...")
+        self._save_logs()
         self.client.stop_spinning()
+
+    def _save_logs(self):
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        
+        # Save actions
+        if self._action_buffer:
+            try:
+                filename = os.path.join(self.log_dir, f"actions_{timestamp}.npy")
+                data = np.array(self._action_buffer, dtype=np.float32)
+                np.save(filename, data)
+                print(f"[Bridge] Action logs saved: {filename} ({len(data)} samples)")
+            except Exception as e:
+                print(f"[Bridge] Failed to save action logs: {e}")
+
+        # Save states
+        if self._state_buffer:
+            try:
+                filename = os.path.join(self.log_dir, f"states_{timestamp}.npy")
+                data = np.array(self._state_buffer, dtype=np.float32)
+                np.save(filename, data)
+                print(f"[Bridge] State logs saved: {filename} ({len(data)} samples)")
+            except Exception as e:
+                print(f"[Bridge] Failed to save state logs: {e}")
 
 def bridge_persistent_worker(conn, mode="sim"):
     """
     Persistent worker process that manages the ZeroMQ Bridge and ROS Interface.
     Avoids GIL issues by isolating network I/O and image decoding.
     """
+    import signal
+    # Ignore SIGINT (Ctrl+C) so the parent can handle the shutdown sequence
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
     print(f"[BridgeWorker] Starting in mode: {mode}")
     client = BridgeClient()
     interface = BridgeROSInterface(client, mode=mode)
     
-    while True:
-        try:
-            cmd_data = conn.recv()
-            if cmd_data == "shutdown":
-                interface.shutdown()
-                break
-            elif cmd_data == "get_latest":
-                state = interface.get_latest()
-                conn.send(("ok", state))
-            elif isinstance(cmd_data, tuple):
-                cmd = cmd_data[0]
-                if cmd == "publish_delta":
-                    _, delta, gripper = cmd_data
-                    interface.publish_delta_action(delta, gripper)
-                elif cmd == "publish_pose":
-                    _, pose, gripper = cmd_data
-                    interface.publish_action_pose(pose, gripper)
-                else:
-                    conn.send(("error", f"Unknown tuple command: {cmd}"))
-            else:
-                conn.send(("error", f"Unknown command: {cmd_data}"))
-        except EOFError:
-            break
-        except Exception as e:
-            print(f"[BridgeWorker] Error: {e}")
+    try:
+        while True:
             try:
-                conn.send(("error", str(e)))
-            except:
-                pass
-    conn.close()
-    print("[BridgeWorker] Shutdown.")
+                cmd_data = conn.recv()
+                if cmd_data == "shutdown":
+                    break
+                elif cmd_data == "get_latest":
+                    state = interface.get_latest()
+                    conn.send(("ok", state))
+                elif isinstance(cmd_data, tuple):
+                    cmd = cmd_data[0]
+                    if cmd == "publish_delta":
+                        _, delta, gripper = cmd_data
+                        interface.publish_delta_action(delta, gripper)
+                    elif cmd == "publish_pose":
+                        _, pose, gripper = cmd_data
+                        interface.publish_action_pose(pose, gripper)
+                    else:
+                        conn.send(("error", f"Unknown tuple command: {cmd}"))
+                else:
+                    conn.send(("error", f"Unknown command: {cmd_data}"))
+            except EOFError:
+                break
+            except Exception as e:
+                print(f"[BridgeWorker] Error during command process: {e}")
+                try:
+                    conn.send(("error", str(e)))
+                except:
+                    pass
+    finally:
+        print("[BridgeWorker] Ensuring logs are saved before exiting...")
+        interface.shutdown()
+        try:
+            conn.send("saved") # Final confirmation
+        except:
+            pass
+        conn.close()
+        print("[BridgeWorker] Shutdown.")
 
 
 if __name__=="__main__":

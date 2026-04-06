@@ -135,11 +135,19 @@ class FrankaPanda(Robot):
     def disconnect(self):
         if self.worker_process.is_alive():
             try:
+                print("[FrankaPanda] Requesting worker shutdown and log save...")
                 self.parent_conn.send("shutdown")
+                # Wait for confirmation that logs are saved
+                if self.parent_conn.poll(timeout=5.0):
+                    resp = self.parent_conn.recv()
+                    print(f"[FrankaPanda] Worker confirmed: {resp}")
+                
                 self.worker_process.join(timeout=2.0)
-            except:
-                pass
+            except Exception as e:
+                print(f"[FrankaPanda] Error during disconnect handshake: {e}")
+            
             if self.worker_process.is_alive():
+                print("[FrankaPanda] Worker still alive, terminating...")
                 self.worker_process.terminate()
         
         self._is_connected = False
