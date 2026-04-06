@@ -8,14 +8,9 @@ from typing import Dict, Tuple
 import numpy as np
 import cv2
 
-# For bridge_client.py
-bridge_lib_path = os.path.expanduser('~/home_robotics/homerobotics_ws/src/ros_external/ros_external')
-if bridge_lib_path not in sys.path:
-    sys.path.append(bridge_lib_path)
-from bridge_client import BridgeClient
-from .run_bridge_client import BridgeROSInterface
-
 from std_msgs.msg import Float32MultiArray
+from multiprocessing import Process, Pipe
+from .run_bridge_client import bridge_persistent_worker
 
 # LeRobot imports
 from lerobot.processor import RobotAction, RobotObservation
@@ -35,8 +30,14 @@ class FrankaPanda(Robot):
         self.cameras = config.cameras
         self._is_connected = False
         
-        self.client = None
-        self.interface = None
+        # Multiprocessing setup for the bridge interface
+        self.parent_conn, self.child_conn = Pipe()
+        mode = self.config.id.split("_")[-1] if "_" in self.config.id else "sim"
+        self.worker_process = Process(
+            target=bridge_persistent_worker, 
+            args=(self.child_conn, mode),
+            daemon=True
+        )
         
     @property
     def observation_features(self) -> Dict[str, type | Tuple]:
@@ -70,20 +71,31 @@ class FrankaPanda(Robot):
 
     @check_if_already_connected
     def connect(self, calibrate: bool = True) -> None:
-        self.client = BridgeClient()
-        self.interface = BridgeROSInterface(self.client, mode="sim") 
-        
+        if not self.worker_process.is_alive():
+            self.worker_process.start()
         self._is_connected = True
-        logger.info(f"{self} connected via BridgeROSInterface.")
+        logger.info(f"{self} connected via persistent BridgeWorker process.")
 
     # ------------------------------ API ------------------------------
 
     @check_if_not_connected
     def get_observation(self) -> RobotObservation:
-        # Fetch data from interface
-        full_rgb, wrist_rgb, proprio, gripper, full_stamp, wrist_stamp = self.interface.get_latest()
+        # Request data from worker
+        self.parent_conn.send("get_latest")
+        status, state = self.parent_conn.recv()
         
-        # proprio = {"eef_pos": pos, "eef_quat": quat, "gr_state": gripper}
+        if status != "ok":
+            print(f"[FrankaPanda] Error getting observation: {state}")
+            # Return empty/default if error
+            return {
+                "image": np.zeros((480, 640, 3), dtype=np.uint8),
+                "wrist_image": np.zeros((480, 640, 3), dtype=np.uint8),
+                "pose_0": 0.0, "pose_1": 0.0, "pose_2": 0.0,
+                "pose_3": 0.0, "pose_4": 0.0, "pose_5": 0.0, "pose_6": 0.0,
+            }
+
+        full_rgb, wrist_rgb, proprio, gripper, full_stamp, wrist_stamp = state
+        
         if proprio is not None:
              pose_7d = np.concatenate([
                 proprio["eef_pos"], 
@@ -101,7 +113,6 @@ class FrankaPanda(Robot):
         for i in range(7):
             obs_dict[f"pose_{i}"] = float(pose_7d[i])
             
-        # logger.debug("OBS_DICT KEYS: ", obs_dict.keys())
         return obs_dict
 
     @check_if_not_connected
@@ -117,18 +128,22 @@ class FrankaPanda(Robot):
         gripper_mapped = np.clip(gripper_mapped, 0.0, 100.0)
 
         print(f"[FrankaPanda] Delta: {delta_action}, Gripper: {gripper_mapped:.1f}")        
-        # self.interface.publish_delta_action(delta_action, gripper_mapped)
-        self.interface.publish_delta_action(delta_action, None)
+        self.parent_conn.send(("publish_delta", delta_action, gripper_mapped))
         return action
 
     @check_if_not_connected
     def disconnect(self):
-        if self.interface:
-            self.interface.shutdown()  
-            self.interface = None
-            self.client = None
+        if self.worker_process.is_alive():
+            try:
+                self.parent_conn.send("shutdown")
+                self.worker_process.join(timeout=2.0)
+            except:
+                pass
+            if self.worker_process.is_alive():
+                self.worker_process.terminate()
+        
         self._is_connected = False
-        logger.info(f"{self} disconnected from BridgeROSInterface.")
+        logger.info(f"{self} disconnected and worker process stopped.")
 
 
 if __name__ == "__main__":

@@ -204,9 +204,9 @@ class BridgeROSInterface:
     def publish_delta_action(self, delta_6d, gripper = None):
         print(f"[ACTION] Publishing Cartesian Delta Command: {delta_6d}")
         msg = Float64MultiArray()
-        # delta_6d_scaled = delta_6d * 10
-        # msg.data = delta_6d_scaled.tolist()
-        msg.data = delta_6d.tolist()
+        delta_6d_scaled = delta_6d * 10
+        msg.data = delta_6d_scaled.tolist()
+        # msg.data = delta_6d.tolist()
         self.client.send_message("/cartesian_delta_command", "std_msgs/Float64MultiArray", msg)
 
         if gripper is not None: 
@@ -217,31 +217,72 @@ class BridgeROSInterface:
     def shutdown(self):
         self.client.stop_spinning()
 
+def bridge_persistent_worker(conn, mode="sim"):
+    """
+    Persistent worker process that manages the ZeroMQ Bridge and ROS Interface.
+    Avoids GIL issues by isolating network I/O and image decoding.
+    """
+    print(f"[BridgeWorker] Starting in mode: {mode}")
+    client = BridgeClient()
+    interface = BridgeROSInterface(client, mode=mode)
+    
+    while True:
+        try:
+            cmd_data = conn.recv()
+            if cmd_data == "shutdown":
+                interface.shutdown()
+                break
+            elif cmd_data == "get_latest":
+                state = interface.get_latest()
+                conn.send(("ok", state))
+            elif isinstance(cmd_data, tuple):
+                cmd = cmd_data[0]
+                if cmd == "publish_delta":
+                    _, delta, gripper = cmd_data
+                    interface.publish_delta_action(delta, gripper)
+                elif cmd == "publish_pose":
+                    _, pose, gripper = cmd_data
+                    interface.publish_action_pose(pose, gripper)
+                else:
+                    conn.send(("error", f"Unknown tuple command: {cmd}"))
+            else:
+                conn.send(("error", f"Unknown command: {cmd_data}"))
+        except EOFError:
+            break
+        except Exception as e:
+            print(f"[BridgeWorker] Error: {e}")
+            try:
+                conn.send(("error", str(e)))
+            except:
+                pass
+    conn.close()
+    print("[BridgeWorker] Shutdown.")
+
 
 if __name__=="__main__":
-    print("--- Starting ZeroMQ Bridge Client ---")
+    from multiprocessing import Pipe, Process
+    print("--- Testing ZeroMQ Bridge Persistent Worker ---")
     
-    client = BridgeClient()
-    target_mode = "sim" 
-    interface = BridgeROSInterface(client, mode=target_mode)
+    parent_conn, child_conn = Pipe()
+    p = Process(target=bridge_persistent_worker, args=(child_conn, "sim"))
+    p.start()
 
-    print("[Client] Waiting for ZMQ connection to establish...")
-    time.sleep(2.0)
+    time.sleep(2.0) # Give it time to connect
 
-    pose_action = np.array([0.1, 0, 0.0, 0, 0, 0])
-    interface.publish_delta_action(pose_action)
+    # Test Delta Action via worker
+    print("[Main] Sending test delta action...")
+    delta = np.array([0.05, 0, 0, 0, 0, 0], dtype=np.float32)
+    parent_conn.send(("publish_delta", delta, 50.0))
     
-    print("\n[Client] System is running and listening. Waiting for ROS 2 Server...")
-    print("[Client] Press Ctrl+C to exit.\n")
+    # Test observation retrieval
+    print("[Main] Requesting latest observation...")
+    parent_conn.send("get_latest")
+    status, state = parent_conn.recv()
+    if status == "ok":
+        full_rgb, wrist_rgb, proprio, gripper, full_stamp, wrist_stamp = state
+        print(f"[Main] Received observation. Proprio: {proprio is not None}, Gripper: {gripper}")
     
-    try:
-        while True:
-            # You can also actively poll the latest data here if needed:
-            # full_rgb, wrist_rgb, proprio, gripper, full_stamp, wrist_stamp = interface.get_latest()
-            time.sleep(1.0) 
-            
-    except KeyboardInterrupt:
-        print("\n[Client] Caught KeyboardInterrupt. Shutting down...")
-    finally:
-        interface.shutdown()
-        print("[Client] Shutdown complete.")
+    time.sleep(1.0)
+    print("[Main] Shutting down...")
+    parent_conn.send("shutdown")
+    p.join()
