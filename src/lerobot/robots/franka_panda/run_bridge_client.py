@@ -46,6 +46,9 @@ class BridgeROSInterface:
         os.makedirs(self.log_dir, exist_ok=True)
         self._action_buffer = []
         self._state_buffer = []
+        self._cam_dt_buffer = []
+        self._last_full_frame_t = None
+        self._last_wrist_frame_t = None
         self._last_save_time = time.time()
 
         # Set up Subscriptions via Bridge
@@ -83,6 +86,13 @@ class BridgeROSInterface:
                 self._latest_full_rgb = rgb
                 self._latest_full_stamp = msg.header.stamp
             
+            # Log dt for full camera
+            now = time.time()
+            if self._last_full_frame_t is not None:
+                dt = now - self._last_full_frame_t
+                self._cam_dt_buffer.append([now, dt, 0]) # 0 for full_cam
+            self._last_full_frame_t = now
+
             elapsed = (time.perf_counter() - start_time) * 1000
             if IS_DEBUGGING:
                 print(f"[Bridge] Full cam decode: {elapsed:.2f}ms")
@@ -115,6 +125,13 @@ class BridgeROSInterface:
                 self._latest_wrist_rgb = rgb
                 self._latest_wrist_stamp = msg.header.stamp
             
+            # Log dt for wrist camera
+            now = time.time()
+            if self._last_wrist_frame_t is not None:
+                dt = now - self._last_wrist_frame_t
+                self._cam_dt_buffer.append([now, dt, 1]) # 1 for wrist_cam
+            self._last_wrist_frame_t = now
+
             elapsed = (time.perf_counter() - start_time) * 1000
             if IS_DEBUGGING:
                 print(f"[Bridge] Wrist cam decode: {elapsed:.2f}ms")
@@ -264,6 +281,16 @@ class BridgeROSInterface:
                 print(f"[Bridge] State logs saved: {filename} ({len(data)} samples)")
             except Exception as e:
                 print(f"[Bridge] Failed to save state logs: {e}")
+
+        # Save camera dt logs
+        if self._cam_dt_buffer:
+            try:
+                filename = os.path.join(self.log_dir, f"cam_dt_{timestamp}.npy")
+                data = np.array(self._cam_dt_buffer, dtype=np.float32)
+                np.save(filename, data)
+                print(f"[Bridge] Camera DT logs saved: {filename} ({len(data)} samples)")
+            except Exception as e:
+                print(f"[Bridge] Failed to save camera DT logs: {e}")
 
 def bridge_persistent_worker(conn, mode="sim"):
     """
