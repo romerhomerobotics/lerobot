@@ -33,6 +33,7 @@ def main(args=None):
     # 6. Register Action Topics (Allows the client to send commands to ROS 2)
     server.register_topic('/cartesian_velocity_command', 'std_msgs/Float64MultiArray')
     server.register_topic('/cartesian_pose_command', 'std_msgs/Float64MultiArray')
+    server.register_topic('/cartesian_delta_command', 'std_msgs/Float64MultiArray')
     server.register_topic('/joint_command', 'std_msgs/Float64MultiArray')
     server.register_topic('/gripper_command', 'std_msgs/Float64')
     
