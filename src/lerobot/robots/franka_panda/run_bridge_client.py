@@ -47,6 +47,8 @@ class BridgeROSInterface:
         self._action_buffer = []
         self._state_buffer = []
         self._cam_dt_buffer = []
+        self._full_imgs = []
+        self._wrist_imgs = []
         self._last_full_frame_t = None
         self._last_wrist_frame_t = None
         self._last_save_time = time.time()
@@ -86,6 +88,9 @@ class BridgeROSInterface:
                 self._latest_full_rgb = rgb
                 self._latest_full_stamp = msg.header.stamp
             
+            # Log full camera image
+            self._full_imgs.append(rgb.copy())
+            
             # Log dt for full camera
             now = time.time()
             if self._last_full_frame_t is not None:
@@ -124,6 +129,9 @@ class BridgeROSInterface:
             with self._wrist_rgb_lock:
                 self._latest_wrist_rgb = rgb
                 self._latest_wrist_stamp = msg.header.stamp
+            
+            # Log wrist camera image
+            self._wrist_imgs.append(rgb.copy())
             
             # Log dt for wrist camera
             now = time.time()
@@ -240,7 +248,7 @@ class BridgeROSInterface:
         
     def publish_delta_action(self, delta_6d, gripper = None):
         msg = Float64MultiArray()
-        delta_6d_scaled = delta_6d * 30
+        delta_6d_scaled = delta_6d * 30 # NOTE: this converts position to velocity which is what is used in /cartesian_delta_command
         msg.data = delta_6d_scaled.tolist()
         # msg.data = delta_6d.tolist()
         self.client.send_message("/cartesian_delta_command", "std_msgs/Float64MultiArray", msg)
@@ -252,7 +260,7 @@ class BridgeROSInterface:
         
 
         # Logging the action
-        self._action_buffer.append([time.time(), *delta_6d, gripper if gripper is not None else 0.0])
+        self._action_buffer.append([time.time(), *delta_6d_scaled, gripper if gripper is not None else 0.0])
         
     def shutdown(self):
         print("[Bridge] Shutting down and saving logs...")
@@ -291,6 +299,36 @@ class BridgeROSInterface:
                 print(f"[Bridge] Camera DT logs saved: {filename} ({len(data)} samples)")
             except Exception as e:
                 print(f"[Bridge] Failed to save camera DT logs: {e}")
+
+        # Save images as videos
+        fps_out = 30 # Default target FPS for playback
+        if self._full_imgs:
+            try:
+                filename = os.path.join(self.log_dir, f"full_cam_{timestamp}.mp4")
+                h, w, _ = self._full_imgs[0].shape
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(filename, fourcc, fps_out, (w, h))
+                for frame in self._full_imgs:
+                    # Convert RGB (buffer) to BGR (OpenCV writer)
+                    out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                out.release()
+                print(f"[Bridge] Full camera video saved: {filename} ({len(self._full_imgs)} frames)")
+            except Exception as e:
+                print(f"[Bridge] Failed to save full camera video: {e}")
+
+        if self._wrist_imgs:
+            try:
+                filename = os.path.join(self.log_dir, f"wrist_cam_{timestamp}.mp4")
+                h, w, _ = self._wrist_imgs[0].shape
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(filename, fourcc, fps_out, (w, h))
+                for frame in self._wrist_imgs:
+                    # Convert RGB (buffer) to BGR (OpenCV writer)
+                    out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                out.release()
+                print(f"[Bridge] Wrist camera video saved: {filename} ({len(self._wrist_imgs)} frames)")
+            except Exception as e:
+                print(f"[Bridge] Failed to save wrist camera video: {e}")
 
 def bridge_persistent_worker(conn, mode="sim"):
     """
