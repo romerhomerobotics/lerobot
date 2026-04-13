@@ -29,12 +29,14 @@ def main(args=None):
     # NOTE: You must have another ROS 2 node publishing the TF data to /eef_pose
     server.register_topic('/eef_pose', 'geometry_msgs/Pose') 
     server.register_topic('/gripper_state', 'std_msgs/Float64')
+    server.register_topic('/joint_states', 'sensor_msgs/JointState')
 
     # 6. Register Action Topics (Allows the client to send commands to ROS 2)
     server.register_topic('/cartesian_velocity_command', 'std_msgs/Float64MultiArray')
     server.register_topic('/cartesian_pose_command', 'std_msgs/Float64MultiArray')
     server.register_topic('/cartesian_delta_command', 'std_msgs/Float64MultiArray')
     server.register_topic('/joint_command', 'std_msgs/Float64MultiArray')
+    server.register_topic('/joint_delta_command', 'std_msgs/Float64MultiArray')
     server.register_topic('/gripper_command', 'std_msgs/Float64')
     
     print("\n[Server] Bridge Server is running and listening to ROS 2...")
