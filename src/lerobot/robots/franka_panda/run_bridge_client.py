@@ -15,13 +15,16 @@ import numpy as np
 
 from std_msgs.msg import Float64, Float64MultiArray
 from geometry_msgs.msg import Pose
-from sensor_msgs.msg import Image, CompressedImage
+from sensor_msgs.msg import Image, CompressedImage, JointState
 
 IS_DEBUGGING = False
 
+from .config_franka_panda import FrankaPandaRobotConfig
+
 class BridgeROSInterface:
-    def __init__(self, bridge_client, mode="sim"):
+    def __init__(self, bridge_client, config: FrankaPandaRobotConfig, mode="sim"):
         self.client = bridge_client
+        self.config = config
         self.mode = mode
         
         print(f"[BridgeROSInterface] Initializing in mode: {mode}")
@@ -41,6 +44,9 @@ class BridgeROSInterface:
         self._latest_gripper = None
         self._gripper_lock = threading.Lock()
 
+        self._latest_joints = None
+        self._joints_lock = threading.Lock()
+
         # Logging setup
         self.log_dir = os.path.expanduser("~/lerobot/outputs/test_logs")
         os.makedirs(self.log_dir, exist_ok=True)
@@ -53,19 +59,25 @@ class BridgeROSInterface:
         self._last_wrist_frame_t = None
         self._last_save_time = time.time()
 
-        # Set up Subscriptions via Bridge
-        if mode == "real":
-            print("[BridgeROSInterface] Subscribing to COMPRESSED images (Real)")
-            self.client.subscribe("/side_camera/color/image_compressed", self._full_cam_cb_decompress)
-            self.client.subscribe("/wrist/color/image_compressed", self._wrist_cam_cb_decompress)
-        else: # sim
-            print("[BridgeROSInterface] Subscribing to RAW images (Sim)")
-            self.client.subscribe("/camera_front/color/image_raw", self._full_cam_cb)
-            self.client.subscribe("/wrist/color/image_raw", self._wrist_cam_cb)
+        # Subscriptions based on flags
+        if self.config.use_cameras:
+            if mode == "real":
+                print("[BridgeROSInterface] Subscribing to COMPRESSED images (Real)")
+                self.client.subscribe("/side_camera/color/image_compressed", self._full_cam_cb_decompress)
+                self.client.subscribe("/wrist/color/image_compressed", self._wrist_cam_cb_decompress)
+            else: # sim
+                print("[BridgeROSInterface] Subscribing to RAW images (Sim)")
+                self.client.subscribe("/camera_front/color/image_raw", self._full_cam_cb)
+                self.client.subscribe("/wrist/color/image_raw", self._wrist_cam_cb)
 
-        # Proprioception and Gripper subscriptions
-        # Note: /eef_pose must be published by your ROS 2 server!
-        self.client.subscribe("/eef_pose", self._proprio_cb)
+        if self.config.use_eef:
+            print("[BridgeROSInterface] Subscribing to /eef_pose")
+            self.client.subscribe("/eef_pose", self._proprio_cb)
+            
+        if self.config.use_joints:
+            print("[BridgeROSInterface] Subscribing to /joint_states")
+            self.client.subscribe("/joint_states", self._joint_states_cb)
+        
         self.client.subscribe("/gripper_state", self._gripper_cb)
         
         # Start the background listening thread
@@ -184,6 +196,23 @@ class BridgeROSInterface:
         with self._gripper_lock:
             self._latest_gripper = float(msg.data)
 
+    def _joint_states_cb(self, msg: JointState):
+        if IS_DEBUGGING:
+            print(f"[INFO] Received Joint States at {time.time():.2f}")
+        
+        # Capture positions for arm (first 7) and gripper (rest)
+        # Assuming the first 7 are panda joints based on mono_controller_sim.py
+        pos = np.array(msg.position, dtype=np.float32)
+        if len(pos) > 0:
+            print(f"[DEBUG] Joint States Received: {len(pos)} joints, first: {pos[0]:.3f}")
+        else:
+            print("[DEBUG] WARNING: Received EMPTY Joint States message!")
+            
+        with self._joints_lock:
+            self._latest_joints = pos
+        
+        # Also log to state buffer if needed, but primarily used for observation
+
     # ------------------------------ API / PUBLISHERS ------------------------------
 
     def get_latest(self):
@@ -197,8 +226,10 @@ class BridgeROSInterface:
             proprio = self._latest_proprio
         with self._gripper_lock:
             gripper = self._latest_gripper
+        with self._joints_lock:
+            joints = self._latest_joints
 
-        return (full_rgb, wrist_rgb, proprio, gripper, full_stamp, wrist_stamp)
+        return (full_rgb, wrist_rgb, proprio, gripper, joints, full_stamp, wrist_stamp)
 
     def go_to_default_joint(self):
         print("[ACTION] Sending default joint command")
@@ -248,19 +279,33 @@ class BridgeROSInterface:
         
     def publish_delta_action(self, delta_6d, gripper = None):
         msg = Float64MultiArray()
-        delta_6d_scaled = delta_6d * 30 # NOTE: this converts position to velocity which is what is used in /cartesian_delta_command
-        msg.data = delta_6d_scaled.tolist()
-        # msg.data = delta_6d.tolist()
+        # NOTE: this converts position to velocity which is what is used in /cartesian_delta_command
+        # We assume robot control freq is ~30Hz, so multiply by 30 to get velocity
+        delta_scaled = delta_6d * 30 
+        msg.data = delta_scaled.tolist()
         self.client.send_message("/cartesian_delta_command", "std_msgs/Float64MultiArray", msg)
+        
+        if gripper is not None:
+             gmsg = Float64()
+             gmsg.data = float(gripper)
+             self.client.send_message("/gripper_command", "std_msgs/Float64", gmsg)
+             
+        # Log action
+        self._action_buffer.append([time.time(), *delta_scaled, gripper if gripper is not None else 0.0])
 
-        if gripper is not None: 
+    def publish_joint_delta(self, joint_delta, gripper=None):
+        print(f"[ACTION] Publishing Joint Delta Command: {joint_delta}")
+        msg = Float64MultiArray()
+        msg.data = joint_delta.tolist()
+        self.client.send_message("/joint_delta_command", "std_msgs/Float64MultiArray", msg)
+        
+        if gripper is not None:
             gmsg = Float64()
             gmsg.data = float(gripper)
             self.client.send_message("/gripper_command", "std_msgs/Float64", gmsg)
         
-
-        # Logging the action
-        self._action_buffer.append([time.time(), *delta_6d_scaled, gripper if gripper is not None else 0.0])
+        # Log action
+        self._action_buffer.append([time.time(), *joint_delta, gripper if gripper is not None else 0.0])
         
     def shutdown(self):
         print("[Bridge] Shutting down and saving logs...")
@@ -330,7 +375,7 @@ class BridgeROSInterface:
             except Exception as e:
                 print(f"[Bridge] Failed to save wrist camera video: {e}")
 
-def bridge_persistent_worker(conn, mode="sim"):
+def bridge_persistent_worker(conn, config, mode="sim"):
     """
     Persistent worker process that manages the ZeroMQ Bridge and ROS Interface.
     Avoids GIL issues by isolating network I/O and image decoding.
@@ -340,8 +385,10 @@ def bridge_persistent_worker(conn, mode="sim"):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     print(f"[BridgeWorker] Starting in mode: {mode}")
+    # Use the config passed from the parent process
+    
     client = BridgeClient()
-    interface = BridgeROSInterface(client, mode=mode)
+    interface = BridgeROSInterface(client, config=config, mode=mode)
     
     try:
         while True:
@@ -360,6 +407,9 @@ def bridge_persistent_worker(conn, mode="sim"):
                     elif cmd == "publish_pose":
                         _, pose, gripper = cmd_data
                         interface.publish_action_pose(pose, gripper)
+                    elif cmd == "publish_joint_delta":
+                        _, joints, gripper = cmd_data
+                        interface.publish_joint_delta(joints, gripper)
                     else:
                         conn.send(("error", f"Unknown tuple command: {cmd}"))
                 else:
