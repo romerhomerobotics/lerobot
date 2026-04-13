@@ -77,8 +77,8 @@ def visualize_inference_logs(log_dir="outputs/test_logs", play=True):
     keys = list(data[0].keys())
     print(f"Found {num_frames} frames with keys: {keys}")
     
-    image_keys = [k for k in keys if "images" in k]
-    state_keys = [k for k in keys if "state" in k]
+    image_keys = [k for k in keys if "image" in k]
+    state_keys = [k for k in keys if "state" in k or "joint" in k or "gripper" in k or "pose" in k]
     
     # 3. Statistics for states
     print("\n--- State Statistics ---")
