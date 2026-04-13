@@ -10,6 +10,7 @@ import cv2
 
 from std_msgs.msg import Float32MultiArray
 from multiprocessing import Process, Pipe
+from scipy.spatial.transform import Rotation as R
 from .run_bridge_client import bridge_persistent_worker
 
 # LeRobot imports
@@ -45,15 +46,18 @@ class FrankaPanda(Robot):
             "image": (480, 640, 3), # (height, width, channels)
             "wrist_image": (480, 640, 3),
         }
-        # 7D state (xyz + quat)
-        for i in range(7):
+        # 7D state (xyz + rpy + gripper)
+        for i in range(6):
             features[f"pose_{i}"] = float
+        features["gripper"] = float
         return features
 
     @property
     def action_features(self) -> Dict[str, type]:
-        # 7D action (xyz + quat)
-        return {f"pose_{i}": float for i in range(7)}
+        # 7D action (delta xyz + delta rpy + gripper)
+        features = {f"pose_{i}": float for i in range(6)}
+        features["gripper"] = float
+        return features
 
     @property
     def is_connected(self) -> bool:
@@ -86,20 +90,25 @@ class FrankaPanda(Robot):
         
         if status != "ok":
             print(f"[FrankaPanda] Error getting observation: {state}")
-            # Return empty/default if error
             return {
                 "image": np.zeros((480, 640, 3), dtype=np.uint8),
                 "wrist_image": np.zeros((480, 640, 3), dtype=np.uint8),
                 "pose_0": 0.0, "pose_1": 0.0, "pose_2": 0.0,
-                "pose_3": 0.0, "pose_4": 0.0, "pose_5": 0.0, "pose_6": 0.0,
+                "pose_3": 0.0, "pose_4": 0.0, "pose_5": 0.0, "gripper": 0.0,
             }
 
         full_rgb, wrist_rgb, proprio, gripper, full_stamp, wrist_stamp = state
         
         if proprio is not None:
+             xyz = proprio["eef_pos"]
+             quat = proprio["eef_quat"]
+             rpy = R.from_quat(quat).as_euler('xyz', degrees=False)
+             gripper_val = gripper if gripper is not None else 0.0
+             
              pose_7d = np.concatenate([
-                proprio["eef_pos"], 
-                proprio["eef_quat"]
+                xyz, 
+                rpy,
+                [gripper_val]
             ]).astype(np.float32)
         else:
             pose_7d = np.zeros(7, dtype=np.float32)
@@ -109,16 +118,17 @@ class FrankaPanda(Robot):
             "wrist_image": wrist_rgb if wrist_rgb is not None else np.zeros((480, 640, 3), dtype=np.uint8),
         }
         
-        # Add individual pose components
-        for i in range(7):
+        # Add individual pose components: [x, y, z, roll, pitch, yaw, gripper]
+        for i in range(6):
             obs_dict[f"pose_{i}"] = float(pose_7d[i])
+        obs_dict["gripper"] = float(pose_7d[6])
             
         return obs_dict
 
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
         # 7D action from policy = [delta_x, delta_y, delta_z, delta_roll, delta_pitch, delta_yaw, gripper]
-        action_vec = np.array([action[f"pose_{i}"] for i in range(7)], dtype=np.float32)
+        action_vec = np.array([action[f"pose_{i}"] for i in range(6)] + [action["gripper"]], dtype=np.float32)
         
         delta_action = action_vec[:6]  # delta xyzrpy
         gripper_output = action_vec[6] # -1 (close) to 1 (open)
